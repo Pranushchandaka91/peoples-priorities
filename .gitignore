@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+backend/*.db
+backend/seed_snapshot.json
+
+node_modules/
+frontend/dist/
+frontend/node_modules/
