@@ -1,86 +1,128 @@
 # People's Priorities
 
-A constituency development prioritization tool: citizens file structured complaints,
-public datasets give per-ward need scores, and a CP-SAT solver allocates a budget
-across candidate works. Single constituency, 6 wards, seeded synthetic data.
-Text-only intake — no voice/ASR, no translation pipeline, no WhatsApp, no maps.
+**A divergence-audited constituency development prioritization system.**
 
-## The divergence detector
+Built as an internship learning project at Delasoft. Single constituency, synthetic
+data, not deployed — the point was to find out what actually works before anything
+ships, and the most valuable results were the negative ones.
 
-The novel piece. Official records (Jal Jeevan, UDISE, Census) say an asset is
-`functional`. When a citizen complaint says otherwise, that's a **dispute**, and
-a dispute is evidence the record itself might be stale. Each new dispute decays
-trust in the specific (data source, ward) pair that produced the record — never
-globally, never for other wards. As trust decays, the need score for that
-ward-sector stops being a point estimate and becomes an interval that widens
-upward (distrust only ever means "things could be worse than recorded", never
-better), which is what actually gets used in the priority formula. Once a
-ward-sector accumulates enough open disputes, verification tasks are spawned for
-field staff to close out — confirming the complaint (record flips) or the record
-(trust partially recovers). The effect is visible everywhere downstream: the
-ranking table's need column, an amber "disputed by N field reports" flag, and a
-structured rationale card an MP can read out loud.
+---
 
-## Stack
+## What it is
 
-- Backend: FastAPI + SQLAlchemy (SQLite for dev, Postgres via `DATABASE_URL`)
-- Solver: OR-Tools CP-SAT (`core.py`, frozen — the scoring math is not touched)
-- Frontend: React + Vite + Tailwind, single page, three panels
-- `core.py` and `generate.py` are copied in unmodified; everything else wraps them
+Complaints arrive through many doors — an app is one, but also village meetings,
+sarpanch channels, and existing grievance systems — so being heard never requires
+owning the app. The need ranking is pre-determined by government data; incoming
+complaints that *contradict* that data reform it. Silent wards still surface,
+because the baseline ranking requires zero complaints. Where field reports dispute
+specific recorded assets, need becomes a range — the recorded value at the bottom,
+the disputed reality at the top — and what gets triggered is a verification task,
+not money: the verifier closes it with photo evidence, the complainant confirms,
+and every action and inaction is logged. A CP-SAT solver then converts confirmed
+scores, costs, and the budget into a funded list that maximizes delivered benefit
+under hard guarantees like equity floors.
+
+One sentence: **complaints stop being votes and become fact-checkers — when people
+contradict the record, the system stops trusting the record and asks a human to
+go look.**
+
+## What the research found (before anything was built)
+
+Every design claim was tested against a synthetic world with authored ground truth
+(`research/`). Three numbers define the project:
+
+| Ranking method | Spearman ρ vs true need |
+|---|---|
+| Raw complaint volume (naive system) | **−0.23** — worse than random |
+| Full model on realistic-quality data | **+0.58** |
+| One census column (literacy) alone | **+0.73** |
+
+- **Complaint volume measures loudness, not need.** Bias correction narrows the
+  loud/silent ward gap 34× → 11× but cannot close it — you can't correct a signal
+  that was never sent. (`research/demo.py`, `research/eval.py`)
+- **A one-column baseline beats the whole pipeline** on chronic, poverty-shaped
+  need. The system's only honest jobs are the ones the baseline can't do: detect
+  what *changed* recently, rank sectors *within* a ward, count beneficiaries under
+  a budget, and audit stale records. (`research/stress.py`)
+- **Astroturfing is bounded, not prevented**: a 50,000-message flood buys the same
+  score as 500 (cap at 2× expected rate). False verifier closures are isolated by
+  reversal tracking — in simulation, a 60%-dishonest verifier is flagged in a
+  median of 2 months, with zero honest verifiers falsely flagged across 30 trials.
+  (`research/closure.py`)
+- **Stale data misses new crises** — which is exactly when a prioritization tool
+  matters most. That failure is what the divergence detector exists to patch.
+
+## The divergence detector (the novel part)
+
+Complaints that name a specific asset the record marks "functional" create a
+**dispute**. Disputes decay trust in that data source *for that ward*. Decayed
+trust widens the need score into a range and surfaces a flag. Enough disputes
+spawn **verification tasks** — a demand for one day of checking, not a rupee.
+
+Verified end-to-end by hand. Work "W14 water system repairs", before and after
+four field reports against assets recorded as functional:
+
+```
+before:  need 0.458 (point)     data_flags: []
+after:   need 0.458 – 0.598     data_flags: ["tap_coverage_pct 61% per
+                                 Jal Jeevan Mission (2022) — disputed by
+                                 5 field reports since 2026-07-20"]
+```
+
+Four complaints bought W14 doubt and an inspection — not money. That is the
+design: you cannot complain your way to funding; you can only complain your way
+to a verification.
 
 ## Running it
 
 ```bash
-# one-time setup — isolated venv, avoids clobbering any global Python packages
-python -m venv .venv
-.venv/Scripts/pip install -r backend/requirements.txt   # Windows
-# .venv/bin/pip install -r backend/requirements.txt     # macOS/Linux
-
+# backend
 cd backend
-../.venv/Scripts/python seed.py        # seeds wards, assets, complaints, works
-../.venv/Scripts/python -m uvicorn app:app --reload
+pip install fastapi uvicorn sqlalchemy ortools pandas numpy
+python seed.py            # builds the synthetic constituency (incl. the W14 trap)
+uvicorn app:app           # API on :8000  (interactive docs at /docs)
 
-# in another terminal
+# frontend
 cd frontend
 npm install
-npm run dev   # http://localhost:5173, proxies /api/* to the backend on :8000
+npm run dev               # UI on :5173
 ```
 
-Run the divergence detector's unit tests with:
-```bash
-cd backend && ../.venv/Scripts/python -m pytest tests/ -v
-```
+Demo mode (`DEMO_MODE=true`) adds a reality-peek endpoint and a world reset for
+live, unscripted demonstrations. NL complaint parsing activates if
+`ANTHROPIC_API_KEY` is set; degrades to the manual form otherwise.
 
-### Demo mode
-
-Set `DEMO_MODE=true` on the backend to expose two operator-only affordances in
-the UI: a "peek reality" eye icon in the verification queue (reveals the
-seeded ground-truth `actual_status` of an asset, never exposed through any
-regular list/ranking endpoint) and a "Reset demo" button that wipes complaints/
-disputes/tasks and restores trust and asset records to their seeded state.
+## Research harness
 
 ```bash
-DEMO_MODE=true ../.venv/Scripts/python -m uvicorn app:app --reload
+cd research
+python demo.py       # the four claims, with arithmetic
+python eval.py       # ranking methods vs authored ground truth
+python stress.py     # how bad can the data get before the model breaks
+python closure.py    # false-closure / dishonest-verifier detection
 ```
 
-### Natural-language complaint parsing (§9a)
+Every quantitative claim in this README is reproduced by one of these scripts.
 
-`POST /complaints/parse` calls the Anthropic API to pre-fill the complaint
-intake form from free text (never auto-submits — the operator always confirms).
-Set `ANTHROPIC_API_KEY` to enable it; without a key the endpoint degrades
-gracefully to a low-confidence empty result and the UI falls back to the manual
-form. (The brief names model id `claude-sonnet-4-6`, which doesn't exist in the
-current Claude lineup — the model is overridable via `PARSE_MODEL` and defaults
-to `claude-sonnet-5`.)
+## Honest limits
 
-## Notable deviations from the brief
+- **Not unbiased — no *hidden* bias.** The weights (0.30 demand / 0.40 need /
+  0.20 equity / 0.10 cost) are open value judgments, set by a human, audit-logged.
+  The severity tradeoff (millions inconvenienced vs. hundreds endangered) has no
+  technical answer; the system makes it explicit, enforces floors, and keeps
+  receipts. It does not make it correct.
+- **The capture problem is institutional, not software.** Deployed inside a
+  decision-maker's office, this is decision-support with an internal audit trail.
+  Its accountability teeth — receipts that bind the decision-maker — exist only
+  under an ownership and publication structure no vendor can unilaterally
+  provide. What software *can* guarantee: tamper-evident, externally archived
+  logs, so the records survive until someone with standing comes asking.
+- **Synthetic world.** All numbers above are from an authored test world with
+  controlled ground truth. They demonstrate mechanism soundness, not field
+  performance. Coercion rates, response rates, and real data quality are
+  field-measurable unknowns.
 
-- **A 9th work.** §2 says to insert the 8 candidate works from `demo.py`
-  verbatim, but none of them target W14+water — which §7's acceptance script
-  requires ("W14 water need shown as a point, then a range"). Added one more
-  work (`W14 water system repairs`, `derived_from_cluster`) so that row exists.
-- **`GET /assets`.** Not in §4's endpoint list, but §6 requires an asset
-  dropdown "filtered by ward + sector" in the intake form, which needs
-  somewhere to fetch from.
-- **`GET /config`.** Lets the frontend discover `DEMO_MODE` without baking the
-  flag into the build.
+## Stack
+
+FastAPI · SQLAlchemy · OR-Tools CP-SAT · React + Vite + Tailwind ·
+pandas / numpy / scipy (research)
