@@ -2,10 +2,11 @@
 Seed script — BUILD_BRIEF.md §2.
 
 Wards + tap/toilet/phc/dropout/school/road/scst columns are copied verbatim
-from demo.py's ward table (which itself matches generate.py's WARDS on the
-columns they share). Complaints come straight out of generate.py's
-generator, inserted as legacy free-text (no asset link). Works are the 8
-candidates from demo.py, verbatim. W14 gets 11 water assets recorded
+from demo.py's ward table. Complaints come from a lightweight pure-Python
+generator defined below (no pandas/numpy import — generate.py pulls those in
+at module level, which made `import seed` slow enough on Render's free tier
+that POST /admin/seed never returned before the proxy timeout). Works are
+the 8 candidates from demo.py, verbatim. W14 gets 11 water assets recorded
 'functional' whose ground truth is broken — the divergence demo's trap.
 """
 import json
@@ -16,7 +17,6 @@ from db import Base, engine, SessionLocal
 from models import (
     Ward, DataSource, Asset, Complaint, Work, SourceTrust, WeightAuditLog,
 )
-import generate as gen
 
 random.seed(42)
 
@@ -146,17 +146,88 @@ def _w14_water_trap() -> list[dict]:
     return assets
 
 
+# ── lightweight complaint generator ──────────────────────────────────────
+# Stand-in for generate.py's pandas/numpy generator. Same output shape
+# (ward_id, sector, raw_text, lang, channel), pure Python so `import seed`
+# stays fast. A handful of template strings copied inline from generate.py.
+N_COMPLAINTS = 40
+
+COMPLAINT_TEMPLATES = {
+    "water": {
+        "en": "No water supply in our colony for {n} days",
+        "hi": "हमारी कॉलोनी में {n} दिन से पानी नहीं आ रहा",
+        "te": "మా కాలనీలో {n} రోజులుగా నీళ్లు రావట్లేదు",
+    },
+    "health": {
+        "en": "Nearest PHC is {n} km away, no ambulance",
+        "hi": "नज़दीकी पीएचसी {n} किलोमीटर दूर है, एम्बुलेंस नहीं",
+        "te": "దగ్గర్లో పీహెచ్‌సీ {n} కిలోమీటర్లు, అంబులెన్స్ లేదు",
+    },
+    "education": {
+        "en": "School has no teachers for {n} months",
+        "hi": "स्कूल में {n} महीने से शिक्षक नहीं हैं",
+        "te": "స్కూల్‌లో {n} నెలలుగా టీచర్లు లేరు",
+    },
+    "roads": {
+        "en": "Road to the village is broken, buses do not come",
+        "hi": "गाँव की सड़क टूटी है, बसें नहीं आतीं",
+        "te": "ఊరికి రోడ్డు పాడైంది, బస్సులు రావట్లేదు",
+    },
+    "sanitation": {
+        "en": "Open drainage next to houses, mosquitoes everywhere",
+        "hi": "घरों के पास खुली नाली, हर जगह मच्छर",
+        "te": "ఇళ్ల పక్కన ఓపెన్ డ్రైనేజీ, దోమలు",
+    },
+    "drainage": {
+        "en": "Market road floods every time it rains",
+        "hi": "बारिश में बाज़ार की सड़क में पानी भर जाता है",
+        "te": "వర్షం పడితే మార్కెట్ రోడ్డు మునిగిపోతుంది",
+    },
+}
+
+COMPLAINT_CHANNELS = ["gram_sabha", "whatsapp", "portal", "letter", "pwa"]
+COMPLAINT_LANGS = ["en", "hi", "te"]
+
+
+def _generate_complaints(ward_rows: list[list]) -> list[dict]:
+    """Allocate N_COMPLAINTS across wards proportional to smartphone_pct —
+    the same loudness-over-need bias generate.py modeled (W07 loud,
+    W22 near-silent), just without the pandas/numpy machinery."""
+    smartphone_pct = {row[0]: row[3] for row in ward_rows}
+    total_weight = sum(smartphone_pct.values())
+
+    counts = {wid: int(N_COMPLAINTS * pct / total_weight) for wid, pct in smartphone_pct.items()}
+    remainder = N_COMPLAINTS - sum(counts.values())
+    loudest = sorted(smartphone_pct, key=lambda w: -smartphone_pct[w])
+    for wid in loudest[:remainder]:
+        counts[wid] += 1
+
+    rows = []
+    for wid, n in counts.items():
+        for _ in range(n):
+            sector = random.choice(SECTORS)
+            lang = random.choice(COMPLAINT_LANGS)
+            tpl = COMPLAINT_TEMPLATES[sector][lang]
+            text = tpl.format(n=random.choice([2, 3, 4, 5, 6, 7, 8, 9, 12]))
+            rows.append(dict(
+                ward_id=wid, sector=sector, raw_text=text, lang=lang,
+                channel=random.choice(COMPLAINT_CHANNELS),
+            ))
+    return rows
+
+
 def seed(db):
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
 
-    for row in WARDS:
-        db.add(Ward(**dict(zip(WARD_COLUMNS, row))))
+    db.add_all([Ward(**dict(zip(WARD_COLUMNS, row))) for row in WARDS])
     print("seed: wards added", flush=True)
 
-    for ds in DATA_SOURCES:
-        db.add(DataSource(source_id=ds["source_id"], name=ds["name"],
-                          sectors=json.dumps(ds["sectors"]), as_of_date=ds["as_of_date"]))
+    db.add_all([
+        DataSource(source_id=ds["source_id"], name=ds["name"],
+                   sectors=json.dumps(ds["sectors"]), as_of_date=ds["as_of_date"])
+        for ds in DATA_SOURCES
+    ])
     print("seed: data sources added", flush=True)
 
     db.flush()
@@ -178,26 +249,25 @@ def seed(db):
         else:
             all_assets += _make_assets_for_ward(ward_id, n_per_sector_pool=len(SECTORS))
 
-    for a in all_assets:
-        db.add(Asset(**a))
+    db.add_all([Asset(**a) for a in all_assets])
     db.flush()
     print("seed: assets added", flush=True)
 
-    for ds in DATA_SOURCES:
-        for row in WARDS:
-            db.add(SourceTrust(source_id=ds["source_id"], ward_id=row[0], trust=1.0))
+    db.add_all([
+        SourceTrust(source_id=ds["source_id"], ward_id=row[0], trust=1.0)
+        for ds in DATA_SOURCES for row in WARDS
+    ])
 
-    print("seed: before complaint generation (generate.py)", flush=True)
-    subs = gen.generate(200)
-    print("seed: after complaint generation (generate.py)", flush=True)
-    for _, r in subs.iterrows():
-        db.add(Complaint(
-            ward_id=r["ward_id"], sector=r["true_sector"], raw_text=r["raw_text"],
-            asset_id=None, reported_status=None, duration_weeks=None,
-        ))
+    print("seed: before complaint generation (lightweight generator)", flush=True)
+    complaint_rows = _generate_complaints(WARDS)
+    print("seed: after complaint generation (lightweight generator)", flush=True)
+    db.add_all([
+        Complaint(ward_id=r["ward_id"], sector=r["sector"], raw_text=r["raw_text"],
+                  asset_id=None, reported_status=None, duration_weeks=None)
+        for r in complaint_rows
+    ])
 
-    for w in WORKS:
-        db.add(Work(**w))
+    db.add_all([Work(**w) for w in WORKS])
     print("seed: works added", flush=True)
 
     db.add(WeightAuditLog(w_demand=0.30, w_need=0.40, w_equity=0.20, w_cost=0.10,
@@ -212,7 +282,7 @@ def seed(db):
         json.dump(snapshot, f, indent=2)
 
     print(f"Seeded {len(WARDS)} wards, {len(DATA_SOURCES)} data sources, "
-          f"{len(all_assets)} assets, {len(subs)} complaints, {len(WORKS)} works.")
+          f"{len(all_assets)} assets, {len(complaint_rows)} complaints, {len(WORKS)} works.")
     print(f"W14 water trap: 11 assets, recorded functional, actual non_functional.")
 
 
