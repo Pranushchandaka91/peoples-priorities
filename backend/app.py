@@ -5,9 +5,11 @@ import json
 import os
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 import divergence as dv
@@ -16,7 +18,7 @@ import scoring
 from db import Base, engine, get_db
 from models import (
     Asset, Complaint, Dispute, DisputeComplaint, SourceTrust, VerificationTask,
-    WeightAuditLog,
+    WeightAuditLog, Ward,
 )
 
 DEMO_MODE = os.environ.get("DEMO_MODE", "false").lower() == "true"
@@ -33,16 +35,19 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(engine)
-    from db import SessionLocal
-    from models import Ward
-    db = SessionLocal()
-    try:
-        if db.query(Ward).count() == 0:
-            import seed
-            seed.seed(db)
-    finally:
-        db.close()
+    """Deliberately does no database work — Render needs the port bound
+    immediately, and DATABASE_URL can point at a Postgres instance that
+    isn't reachable yet. Tables are created and seeded via POST /admin/seed."""
+    pass
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(ProgrammingError)
+async def db_not_initialized_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "database is not initialized — call POST /admin/seed"},
+    )
 
 
 @app.get("/config")
@@ -244,6 +249,22 @@ def get_reality(asset_id: str, db: Session = Depends(get_db)):
     if asset is None:
         raise HTTPException(404, f"no such asset: {asset_id}")
     return dict(asset_id=asset.asset_id, actual_status=asset.actual_status)
+
+
+# ── admin: schema + seed (deferred out of startup so the port binds) ────
+
+@app.post("/admin/seed")
+def post_admin_seed(db: Session = Depends(get_db)):
+    if not DEMO_MODE:
+        raise HTTPException(403, "seeding is only available in demo mode")
+
+    Base.metadata.create_all(engine)
+
+    if db.query(Ward).count() == 0:
+        import seed
+        seed.seed(db)
+        return dict(status="seeded")
+    return dict(status="already_seeded")
 
 
 # ── §9c: demo reset ──────────────────────────────────────────────────────
