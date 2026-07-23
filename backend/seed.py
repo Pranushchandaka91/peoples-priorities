@@ -152,10 +152,12 @@ def seed(db):
 
     for row in WARDS:
         db.add(Ward(**dict(zip(WARD_COLUMNS, row))))
+    print("seed: wards added", flush=True)
 
     for ds in DATA_SOURCES:
         db.add(DataSource(source_id=ds["source_id"], name=ds["name"],
                           sectors=json.dumps(ds["sectors"]), as_of_date=ds["as_of_date"]))
+    print("seed: data sources added", flush=True)
 
     db.flush()
 
@@ -179,12 +181,15 @@ def seed(db):
     for a in all_assets:
         db.add(Asset(**a))
     db.flush()
+    print("seed: assets added", flush=True)
 
     for ds in DATA_SOURCES:
         for row in WARDS:
             db.add(SourceTrust(source_id=ds["source_id"], ward_id=row[0], trust=1.0))
 
+    print("seed: before complaint generation (generate.py)", flush=True)
     subs = gen.generate(200)
+    print("seed: after complaint generation (generate.py)", flush=True)
     for _, r in subs.iterrows():
         db.add(Complaint(
             ward_id=r["ward_id"], sector=r["true_sector"], raw_text=r["raw_text"],
@@ -193,10 +198,12 @@ def seed(db):
 
     for w in WORKS:
         db.add(Work(**w))
+    print("seed: works added", flush=True)
 
     db.add(WeightAuditLog(w_demand=0.30, w_need=0.40, w_equity=0.20, w_cost=0.10,
                           changed_by="seed"))
 
+    print("seed: before final commit", flush=True)
     db.commit()
 
     # snapshot for §9c /admin/reset — recorded_status as-seeded
