@@ -263,7 +263,13 @@ def post_admin_seed(db: Session = Depends(get_db)):
     Base.metadata.create_all(engine)
 
     print("admin/seed: before Ward count query", flush=True)
-    if db.query(Ward).count() == 0:
+    needs_seed = db.query(Ward).count() == 0
+    # Release this session's read transaction before seed() touches the
+    # tables — otherwise its held lock blocks (and deadlocks against) the
+    # writes seed() issues on this same connection.
+    db.commit()
+    print("admin/seed: read transaction committed", flush=True)
+    if needs_seed:
         print("admin/seed: before import seed", flush=True)
         import seed
         print("admin/seed: after import seed", flush=True)

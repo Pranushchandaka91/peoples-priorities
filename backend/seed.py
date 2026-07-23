@@ -13,9 +13,10 @@ import json
 import random
 from datetime import date
 
-from db import Base, engine, SessionLocal
+from db import SessionLocal
 from models import (
-    Ward, DataSource, Asset, Complaint, Work, SourceTrust, WeightAuditLog,
+    Ward, DataSource, Asset, Complaint, Dispute, DisputeComplaint,
+    VerificationTask, Work, SourceTrust, WeightAuditLog,
 )
 
 random.seed(42)
@@ -188,6 +189,12 @@ COMPLAINT_TEMPLATES = {
 COMPLAINT_CHANNELS = ["gram_sabha", "whatsapp", "portal", "letter", "pwa"]
 COMPLAINT_LANGS = ["en", "hi", "te"]
 
+# Children before parents, so DELETE never trips a foreign-key constraint.
+_RESET_ORDER = [
+    DisputeComplaint, VerificationTask, Dispute, Complaint, Asset,
+    SourceTrust, Work, WeightAuditLog, DataSource, Ward,
+]
+
 
 def _generate_complaints(ward_rows: list[list]) -> list[dict]:
     """Allocate N_COMPLAINTS across wards proportional to smartphone_pct —
@@ -218,8 +225,15 @@ def _generate_complaints(ward_rows: list[list]) -> list[dict]:
 
 def seed(db):
     print("SEED FUNCTION ENTERED", flush=True)
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+
+    # DELETE existing rows on this SAME session/connection, in FK-safe
+    # order — a separate engine connection issuing DROP TABLE deadlocked
+    # against this session's transaction on Postgres (DROP needs an
+    # ACCESS EXCLUSIVE lock the other connection wouldn't release).
+    for model in _RESET_ORDER:
+        db.query(model).delete()
+    db.flush()
+    print("seed: existing rows cleared", flush=True)
 
     db.add_all([Ward(**dict(zip(WARD_COLUMNS, row))) for row in WARDS])
     print("seed: wards added", flush=True)
