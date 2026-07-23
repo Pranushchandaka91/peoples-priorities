@@ -255,15 +255,21 @@ def get_reality(asset_id: str, db: Session = Depends(get_db)):
 
 @app.post("/admin/seed")
 def post_admin_seed(db: Session = Depends(get_db)):
+    print("admin/seed: entered", flush=True)
     if not DEMO_MODE:
         raise HTTPException(403, "seeding is only available in demo mode")
 
+    print("admin/seed: before create_all", flush=True)
     Base.metadata.create_all(engine)
 
+    print("admin/seed: before Ward count query", flush=True)
     if db.query(Ward).count() == 0:
+        print("admin/seed: before seed.seed(db)", flush=True)
         import seed
         seed.seed(db)
+        print("admin/seed: seed.seed(db) returned", flush=True)
         return dict(status="seeded")
+    print("admin/seed: already_seeded, returning", flush=True)
     return dict(status="already_seeded")
 
 
