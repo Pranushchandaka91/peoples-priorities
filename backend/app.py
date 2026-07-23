@@ -34,6 +34,15 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(engine)
+    from db import SessionLocal
+    from models import Ward
+    db = SessionLocal()
+    try:
+        if db.query(Ward).count() == 0:
+            import seed
+            seed.seed(db)
+    finally:
+        db.close()
 
 
 @app.get("/config")
