@@ -264,8 +264,10 @@ def post_admin_seed(db: Session = Depends(get_db)):
 
     print("admin/seed: before Ward count query", flush=True)
     if db.query(Ward).count() == 0:
-        print("admin/seed: before seed.seed(db)", flush=True)
+        print("admin/seed: before import seed", flush=True)
         import seed
+        print("admin/seed: after import seed", flush=True)
+        print("admin/seed: before seed.seed(db)", flush=True)
         seed.seed(db)
         print("admin/seed: seed.seed(db) returned", flush=True)
         return dict(status="seeded")

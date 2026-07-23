@@ -217,6 +217,7 @@ def _generate_complaints(ward_rows: list[list]) -> list[dict]:
 
 
 def seed(db):
+    print("SEED FUNCTION ENTERED", flush=True)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
 
