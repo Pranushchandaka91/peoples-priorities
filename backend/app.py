@@ -258,3 +258,8 @@ def post_admin_reset(db: Session = Depends(get_db)):
 
     db.commit()
     return dict(status="reset")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
